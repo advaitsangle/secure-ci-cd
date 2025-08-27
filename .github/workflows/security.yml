@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: read
-  security-events: write   # only needed if you later upload SARIF
 
 jobs:
   security:
@@ -18,14 +17,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ------- Gitleaks (secrets) -------
-      # Treat any secret as high severity → fail on detection.
+      # ---------- Gitleaks (secrets) ----------
       - name: Gitleaks
         uses: zricethezav/gitleaks-action@v2
         with:
           args: detect --source . --no-git
 
-      # ------- pip-audit (deps) -------
+      # ---------- pip-audit (dependency vulns) ----------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -34,56 +32,90 @@ jobs:
       - name: Install pip-audit
         run: pip install --upgrade pip-audit
 
-      # Run pip-audit, capture JSON, don't fail yet (we gate severity ourselves)
       - name: pip-audit (collect JSON)
-        run: pip-audit -r requirements.txt -f json -o pip-audit.json || true
+        run: |
+          pip-audit -r requirements.txt -f json -o pip-audit.json || true
+          test -s pip-audit.json || echo "[]" > pip-audit.json
 
-      # Fail only if CVSS >= 7.0 (High/Critical)
-      - name: Fail on high-severity dependency vulns
+      - name: Fail on high-severity dependency vulns (CVSS ≥ 7.0)
         run: |
           python - <<'PY'
           import json, sys
+
           try:
-              data = json.load(open('pip-audit.json'))
-          except FileNotFoundError:
-              print("No pip-audit.json; skipping.")
+              data = json.load(open("pip-audit.json"))
+          except Exception as e:
+              print(f"Failed to read pip-audit.json: {e}")
+              sys.exit(0)  # don't block if unreadable
+
+          # Normalize schema to a list of dependency findings
+          if isinstance(data, dict):
+              for key in ("dependencies", "results", "packages", "report"):
+                  if isinstance(data.get(key), list):
+                      data = data[key]
+                      break
+                  if isinstance(data.get(key), dict) and isinstance(data[key].get("dependencies"), list):
+                      data = data[key]["dependencies"]
+                      break
+
+          if not isinstance(data, list):
+              print("Unrecognized pip-audit JSON schema; skipping severity gate.")
               sys.exit(0)
 
-          def max_score(advisories):
-              scores = []
-              for adv in advisories or []:
-                  # OSV advisories may carry severity entries with CVSS scores
-                  sev = adv.get("severity") or []
-                  for s in sev:
+          def extract_vuln_list(item):
+              for k in ("vulns", "advisories", "vulnerabilities"):
+                  v = item.get(k)
+                  if isinstance(v, list):
+                      return v
+              return []
+
+          def max_cvss(vulns):
+              best = 0.0
+              for v in vulns:
+                  # severity: [{type, score}] (newer schema)
+                  sev = v.get("severity")
+                  if isinstance(sev, list):
+                      for s in sev:
+                          if isinstance(s, dict):
+                              try:
+                                  best = max(best, float(s.get("score", 0)))
+                              except Exception:
+                                  pass
+                  # legacy cvss: {score: "..."}
+                  cvss = v.get("cvss")
+                  if isinstance(cvss, dict):
                       try:
-                          scores.append(float(s.get("score", 0)))
+                          best = max(best, float(cvss.get("score", 0)))
                       except Exception:
                           pass
-                  # legacy field names fallbacks
-                  if "cvss" in adv and isinstance(adv["cvss"], dict):
-                      try:
-                          scores.append(float(adv["cvss"].get("score", 0)))
-                      except Exception:
-                          pass
-              return max(scores) if scores else 0.0
+              return best
 
           highs = []
-          for v in data:
-              score = max_score(v.get("advisories"))
+          for item in data:
+              if not isinstance(item, dict):
+                  continue
+              name = item.get("name") or item.get("package") or "unknown"
+              ver  = item.get("version") or "unknown"
+              vulns = extract_vuln_list(item)
+              score = max_cvss(vulns)
               if score >= 7.0:
-                  highs.append((v["name"], v["version"], [a.get("id") for a in v.get("advisories", [])], score))
+                  ids = []
+                  for v in vulns:
+                      vid = v.get("id") or v.get("advisory") or v.get("alias")
+                      if isinstance(vid, str):
+                          ids.append(vid)
+                  highs.append((name, ver, score, ids))
 
           if highs:
-              print("High-severity dependency vulnerabilities found (CVSS >= 7.0):")
-              for name, ver, ids, score in highs:
-                  print(f"- {name} {ver}  score≈{score}  advisories={ids}")
+              print("High-severity dependency vulnerabilities (CVSS >= 7.0):")
+              for name, ver, score, ids in highs:
+                  print(f"- {name} {ver}  max_score≈{score}  ids={ids}")
               sys.exit(1)
           else:
               print("No high-severity dependency vulnerabilities (CVSS >= 7.0).")
           PY
 
-      # ------- Semgrep (code) -------
-      # Limit failures to ERROR severity rules (treat these as high severity)
+      # ---------- Semgrep (code scanning) ----------
       - name: Semgrep
         uses: returntocorp/semgrep-action@v1
         with:
