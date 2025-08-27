@@ -1,33 +1,23 @@
 name: Security Checks
-
 on:
-  pull_request:
-    branches: [ main ]
-  push:
-    branches: [ main ]
-
-permissions:
-  contents: read
+  pull_request: { branches: [ main ] }
+  push: { branches: [ main ] }
+permissions: { contents: read }
 
 jobs:
   security:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # ---------- Gitleaks (secrets) ----------
       - name: Gitleaks
         uses: zricethezav/gitleaks-action@v2
         with:
           args: detect --source . --no-git
 
-      # ---------- pip-audit (dependency vulns) ----------
       - name: Set up Python
         uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+        with: { python-version: '3.11' }
 
       - name: Install pip-audit
         run: pip install --upgrade pip-audit
@@ -41,81 +31,73 @@ jobs:
         run: |
           python - <<'PY'
           import json, sys
-
-          try:
-              data = json.load(open("pip-audit.json"))
-          except Exception as e:
-              print(f"Failed to read pip-audit.json: {e}")
-              sys.exit(0)  # don't block if unreadable
-
-          # Normalize schema to a list of dependency findings
+          def jload(p):
+              try:
+                  with open(p,'r') as f: return json.load(f)
+              except Exception as e:
+                  print(f"Cannot parse {p}: {e}"); return []
+          data = jload("pip-audit.json")
           if isinstance(data, dict):
-              for key in ("dependencies", "results", "packages", "report"):
-                  if isinstance(data.get(key), list):
-                      data = data[key]
-                      break
-                  if isinstance(data.get(key), dict) and isinstance(data[key].get("dependencies"), list):
-                      data = data[key]["dependencies"]
-                      break
-
+              # unwrap common containers
+              for k in ("dependencies","results","packages"):
+                  v = data.get(k)
+                  if isinstance(v, list): data = v; break
+              else:
+                  rep = data.get("report")
+                  if isinstance(rep, dict) and isinstance(rep.get("dependencies"), list):
+                      data = rep["dependencies"]
+          if isinstance(data, str):
+              try: data = json.loads(data)
+              except Exception: data = []
           if not isinstance(data, list):
-              print("Unrecognized pip-audit JSON schema; skipping severity gate.")
-              sys.exit(0)
+              print("Unrecognized pip-audit schema; skipping gate."); sys.exit(0)
 
-          def extract_vuln_list(item):
-              for k in ("vulns", "advisories", "vulnerabilities"):
+          def vuln_list(item):
+              if not isinstance(item, dict): return []
+              for k in ("vulns","advisories","vulnerabilities"):
                   v = item.get(k)
                   if isinstance(v, list):
-                      return v
+                      return [x for x in v if isinstance(x, dict)]
               return []
-
-          def max_cvss(vulns):
-              best = 0.0
-              for v in vulns:
-                  # severity: [{type, score}] (newer schema)
+          def max_cvss(vs):
+              m = 0.0
+              for v in vs:
                   sev = v.get("severity")
                   if isinstance(sev, list):
                       for s in sev:
                           if isinstance(s, dict):
-                              try:
-                                  best = max(best, float(s.get("score", 0)))
-                              except Exception:
-                                  pass
-                  # legacy cvss: {score: "..."}
+                              try: m = max(m, float(s.get("score", 0)))
+                              except: pass
+                  elif isinstance(sev, dict):
+                      try: m = max(m, float(sev.get("score", 0)))
+                      except: pass
                   cvss = v.get("cvss")
                   if isinstance(cvss, dict):
-                      try:
-                          best = max(best, float(cvss.get("score", 0)))
-                      except Exception:
-                          pass
-              return best
+                      try: m = max(m, float(cvss.get("score", 0)))
+                      except: pass
+              return m
 
           highs = []
           for item in data:
-              if not isinstance(item, dict):
-                  continue
+              if not isinstance(item, dict): continue
               name = item.get("name") or item.get("package") or "unknown"
               ver  = item.get("version") or "unknown"
-              vulns = extract_vuln_list(item)
-              score = max_cvss(vulns)
+              vs   = vuln_list(item)
+              score= max_cvss(vs)
               if score >= 7.0:
-                  ids = []
-                  for v in vulns:
+                  ids=[]
+                  for v in vs:
                       vid = v.get("id") or v.get("advisory") or v.get("alias")
-                      if isinstance(vid, str):
-                          ids.append(vid)
-                  highs.append((name, ver, score, ids))
-
+                      if isinstance(vid, str): ids.append(vid)
+                  highs.append((name,ver,score,ids))
           if highs:
-              print("High-severity dependency vulnerabilities (CVSS >= 7.0):")
-              for name, ver, score, ids in highs:
-                  print(f"- {name} {ver}  max_score≈{score}  ids={ids}")
+              print("High-severity dependency vulnerabilities (CVSS ≥ 7.0):")
+              for n,v,s,ids in highs:
+                  print(f"- {n} {v} max≈{s} ids={ids}")
               sys.exit(1)
-          else:
-              print("No high-severity dependency vulnerabilities (CVSS >= 7.0).")
+          print("No high-severity dependency vulnerabilities (CVSS ≥ 7.0).")
           PY
 
-      # ---------- Semgrep (code scanning) ----------
       - name: Semgrep
         uses: returntocorp/semgrep-action@v1
         with:
