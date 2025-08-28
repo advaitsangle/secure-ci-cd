@@ -6,87 +6,50 @@ on:
   push:
     branches: [ main ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
-  security-events: write   # only needed if you later upload SARIF
+  actions: read
 
 jobs:
-  security:
+  gitleaks:
+    name: Gitleaks
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
+      - name: Checkout (full history for PR scan)
         uses: actions/checkout@v4
-
-      # ------- Gitleaks (secrets) -------
-      # Treat any secret as high severity → fail on detection.
-      - name: Gitleaks
-        uses: zricethezav/gitleaks-action@v2
         with:
-          args: detect --source . --no-git
+          fetch-depth: 0
+      - name: Gitleaks (scan PR history)
+        uses: zricethezav/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ------- pip-audit (deps) -------
-      - name: Set up Python
-        uses: actions/setup-python@v5
+  pip_audit:
+    name: pip-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - run: pip install --upgrade pip-audit
+      # Simple, robust: fail on any vulnerability (no JSON parsing)
+      - name: Run pip-audit
+        run: pip-audit -r requirements.txt
 
-      - name: Install pip-audit
-        run: pip install --upgrade pip-audit
-
-      # Run pip-audit, capture JSON, don't fail yet (we gate severity ourselves)
-      - name: pip-audit (collect JSON)
-        run: pip-audit -r requirements.txt -f json -o pip-audit.json || true
-
-      # Fail only if CVSS >= 7.0 (High/Critical)
-      - name: Fail on high-severity dependency vulns
-        run: |
-          python - <<'PY'
-          import json, sys
-          try:
-              data = json.load(open('pip-audit.json'))
-          except FileNotFoundError:
-              print("No pip-audit.json; skipping.")
-              sys.exit(0)
-
-          def max_score(advisories):
-              scores = []
-              for adv in advisories or []:
-                  # OSV advisories may carry severity entries with CVSS scores
-                  sev = adv.get("severity") or []
-                  for s in sev:
-                      try:
-                          scores.append(float(s.get("score", 0)))
-                      except Exception:
-                          pass
-                  # legacy field names fallbacks
-                  if "cvss" in adv and isinstance(adv["cvss"], dict):
-                      try:
-                          scores.append(float(adv["cvss"].get("score", 0)))
-                      except Exception:
-                          pass
-              return max(scores) if scores else 0.0
-
-          highs = []
-          for v in data:
-              score = max_score(v.get("advisories"))
-              if score >= 7.0:
-                  highs.append((v["name"], v["version"], [a.get("id") for a in v.get("advisories", [])], score))
-
-          if highs:
-              print("High-severity dependency vulnerabilities found (CVSS >= 7.0):")
-              for name, ver, ids, score in highs:
-                  print(f"- {name} {ver}  score≈{score}  advisories={ids}")
-              sys.exit(1)
-          else:
-              print("No high-severity dependency vulnerabilities (CVSS >= 7.0).")
-          PY
-
-      # ------- Semgrep (code) -------
-      # Limit failures to ERROR severity rules (treat these as high severity)
+  semgrep:
+    name: Semgrep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - name: Semgrep
         uses: returntocorp/semgrep-action@v1
         with:
           config: p/ci
-          args: --severity ERROR
+        env:
+          SEMGREP_ARGS: --severity=ERROR
 
