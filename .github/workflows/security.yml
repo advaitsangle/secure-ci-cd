@@ -50,5 +50,6 @@ jobs:
         uses: returntocorp/semgrep-action@v1
         with:
           config: p/ci
-          args: --severity ERROR
+        env:
+          SEMGREP_ARGS: --severity=ERROR
 
