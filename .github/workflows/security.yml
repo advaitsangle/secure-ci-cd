@@ -1,103 +1,51 @@
 name: Security Checks
+
 on:
-  pull_request: { branches: [ main ] }
-  push: { branches: [ main ] }
-permissions: { contents: read }
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
-  security:
+  gitleaks:
+    name: Gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history for PR scan)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Gitleaks (scan PR history)
+        uses: zricethezav/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  pip_audit:
+    name: pip-audit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Gitleaks
-        uses: zricethezav/gitleaks-action@v2
+      - uses: actions/setup-python@v5
         with:
-          args: detect --source . --no-git
+          python-version: '3.11'
+      - run: pip install --upgrade pip-audit
+      # Simple, robust: fail on any vulnerability (no JSON parsing)
+      - name: Run pip-audit
+        run: pip-audit -r requirements.txt
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with: { python-version: '3.11' }
-
-      - name: Install pip-audit
-        run: pip install --upgrade pip-audit
-
-      - name: pip-audit (collect JSON)
-        run: |
-          pip-audit -r requirements.txt -f json -o pip-audit.json || true
-          test -s pip-audit.json || echo "[]" > pip-audit.json
-
-      - name: Fail on high-severity dependency vulns (CVSS ≥ 7.0)
-        run: |
-          python - <<'PY'
-          import json, sys
-          def jload(p):
-              try:
-                  with open(p,'r') as f: return json.load(f)
-              except Exception as e:
-                  print(f"Cannot parse {p}: {e}"); return []
-          data = jload("pip-audit.json")
-          if isinstance(data, dict):
-              # unwrap common containers
-              for k in ("dependencies","results","packages"):
-                  v = data.get(k)
-                  if isinstance(v, list): data = v; break
-              else:
-                  rep = data.get("report")
-                  if isinstance(rep, dict) and isinstance(rep.get("dependencies"), list):
-                      data = rep["dependencies"]
-          if isinstance(data, str):
-              try: data = json.loads(data)
-              except Exception: data = []
-          if not isinstance(data, list):
-              print("Unrecognized pip-audit schema; skipping gate."); sys.exit(0)
-
-          def vuln_list(item):
-              if not isinstance(item, dict): return []
-              for k in ("vulns","advisories","vulnerabilities"):
-                  v = item.get(k)
-                  if isinstance(v, list):
-                      return [x for x in v if isinstance(x, dict)]
-              return []
-          def max_cvss(vs):
-              m = 0.0
-              for v in vs:
-                  sev = v.get("severity")
-                  if isinstance(sev, list):
-                      for s in sev:
-                          if isinstance(s, dict):
-                              try: m = max(m, float(s.get("score", 0)))
-                              except: pass
-                  elif isinstance(sev, dict):
-                      try: m = max(m, float(sev.get("score", 0)))
-                      except: pass
-                  cvss = v.get("cvss")
-                  if isinstance(cvss, dict):
-                      try: m = max(m, float(cvss.get("score", 0)))
-                      except: pass
-              return m
-
-          highs = []
-          for item in data:
-              if not isinstance(item, dict): continue
-              name = item.get("name") or item.get("package") or "unknown"
-              ver  = item.get("version") or "unknown"
-              vs   = vuln_list(item)
-              score= max_cvss(vs)
-              if score >= 7.0:
-                  ids=[]
-                  for v in vs:
-                      vid = v.get("id") or v.get("advisory") or v.get("alias")
-                      if isinstance(vid, str): ids.append(vid)
-                  highs.append((name,ver,score,ids))
-          if highs:
-              print("High-severity dependency vulnerabilities (CVSS ≥ 7.0):")
-              for n,v,s,ids in highs:
-                  print(f"- {n} {v} max≈{s} ids={ids}")
-              sys.exit(1)
-          print("No high-severity dependency vulnerabilities (CVSS ≥ 7.0).")
-          PY
-
+  semgrep:
+    name: Semgrep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - name: Semgrep
         uses: returntocorp/semgrep-action@v1
         with:
