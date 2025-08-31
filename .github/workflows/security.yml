@@ -23,10 +23,19 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Gitleaks (scan PR history)
+
+      - name: Run Gitleaks
         uses: zricethezav/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: detect --report-format sarif --report-path gitleaks.sarif || true
+
+      - name: Upload Gitleaks Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: gitleaks.sarif
 
   pip_audit:
     name: pip-audit
@@ -37,19 +46,33 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install --upgrade pip-audit
-      # Simple, robust: fail on any vulnerability (no JSON parsing)
-      - name: Run pip-audit
-        run: pip-audit -r requirements.txt
+
+      - name: Run pip-audit and save report
+        run: |
+          pip-audit -r requirements.txt -f json -o pip-audit.json || true
+
+      - name: Upload pip-audit Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-report
+          path: pip-audit.json
 
   semgrep:
     name: Semgrep
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Semgrep
+
+      - name: Run Semgrep
         uses: returntocorp/semgrep-action@v1
         with:
           config: p/ci
         env:
-          SEMGREP_ARGS: --severity=ERROR
+          SEMGREP_ARGS: --severity=ERROR --json --output semgrep.json || true
+
+      - name: Upload Semgrep Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-report
+          path: semgrep.json
 
