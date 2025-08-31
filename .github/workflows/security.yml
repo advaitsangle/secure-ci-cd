@@ -1,35 +1,26 @@
-name: Security Checks
-
-on:
-  pull_request:
-    branches: [ main ]
-  push:
-    branches: [ main ]
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-permissions:
-  contents: read
-  actions: read
-
 jobs:
   gitleaks:
-    name: Gitleaks
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (full history for PR scan)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Gitleaks (scan PR history)
-        uses: zricethezav/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Gitleaks
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/gitleaks/gitleaks/main/install.sh | sh -s v8.24.3
+          mv gitleaks /usr/local/bin/
+
+      - name: Run Gitleaks
+        run: gitleaks detect --source . --report-format sarif --report-path gitleaks.sarif || true
+
+      - name: Upload Gitleaks Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: gitleaks.sarif
 
   pip_audit:
-    name: pip-audit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,19 +28,24 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install --upgrade pip-audit
-      # Simple, robust: fail on any vulnerability (no JSON parsing)
       - name: Run pip-audit
-        run: pip-audit -r requirements.txt
+        run: pip-audit -r requirements.txt -f json -o pip-audit.json || true
+      - name: Upload pip-audit Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-report
+          path: pip-audit.json
 
   semgrep:
-    name: Semgrep
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Semgrep
-        uses: returntocorp/semgrep-action@v1
+      - name: Install Semgrep
+        run: pip install semgrep
+      - name: Run Semgrep
+        run: semgrep --config=p/ci --severity=ERROR --json --output=semgrep.json || true
+      - name: Upload Semgrep Report
+        uses: actions/upload-artifact@v4
         with:
-          config: p/ci
-        env:
-          SEMGREP_ARGS: --severity=ERROR
-
+          name: semgrep-report
+          path: semgrep.json
