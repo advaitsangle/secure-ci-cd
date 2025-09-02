@@ -57,6 +57,19 @@ jobs:
   #         name: pip-audit-report
   #         path: pip-audit.json
 
+  pip_audit:
+    name: pip-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install --upgrade pip-audit
+
+      - name: Run pip-audit
+        run: pip-audit -r requirements.txt -f json -o pip-audit.json || true
+
       - name: Convert pip-audit JSON to SARIF
         run: |
           python - <<'PY'
@@ -86,7 +99,7 @@ jobs:
               name = pkg.get("name")
               version = pkg.get("version")
               for vuln in pkg.get("vulns", []):
-                  if not isinstance(vuln, dict):   # ✅ skip bad entries
+                  if not isinstance(vuln, dict):   # skip bad entries
                       continue
 
                   rule_id = vuln.get("id", "UNKNOWN")
