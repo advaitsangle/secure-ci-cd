@@ -57,7 +57,7 @@ jobs:
   #         name: pip-audit-report
   #         path: pip-audit.json
 
-      pip_audit:
+  pip_audit:
     name: pip-audit
     runs-on: ubuntu-latest
     steps:
