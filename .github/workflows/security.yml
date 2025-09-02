@@ -19,17 +19,18 @@ jobs:
     name: Gitleaks
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (full history for PR scan)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - name: Install Gitleaks
+        run: |
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.24.0/gitleaks_8.24.0_linux_x64.tar.gz -o gitleaks.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo mv gitleaks /usr/local/bin/
+
       - name: Run Gitleaks
-        uses: zricethezav/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          args: detect --report-format sarif --report-path gitleaks.sarif || true
+        run: gitleaks detect --source . --report-format sarif --report-path gitleaks.sarif || true
 
       - name: Upload Gitleaks Report
         uses: actions/upload-artifact@v4
@@ -37,7 +38,26 @@ jobs:
           name: gitleaks-report
           path: gitleaks.sarif
 
-  pip_audit:
+  # pip_audit:
+  #   name: pip-audit
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-python@v5
+  #       with:
+  #         python-version: '3.11'
+  #     - run: pip install --upgrade pip-audit
+
+  #     - name: Run pip-audit
+  #       run: pip-audit -r requirements.txt -f json -o pip-audit.json || true
+
+  #     - name: Upload pip-audit Report
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: pip-audit-report
+  #         path: pip-audit.json
+
+      pip_audit:
     name: pip-audit
     runs-on: ubuntu-latest
     steps:
@@ -47,15 +67,66 @@ jobs:
           python-version: '3.11'
       - run: pip install --upgrade pip-audit
 
-      - name: Run pip-audit and save report
-        run: |
-          pip-audit -r requirements.txt -f json -o pip-audit.json || true
+      - name: Run pip-audit
+        run: pip-audit -r requirements.txt -f json -o pip-audit.json || true
 
-      - name: Upload pip-audit Report
+      - name: Convert pip-audit JSON to SARIF
+        run: |
+          python - <<'PY'
+          import json, sys
+          with open("pip-audit.json") as f:
+              results = json.load(f)
+          sarif = {
+              "version": "2.1.0",
+              "runs": [{
+                  "tool": {
+                      "driver": {
+                          "name": "pip-audit",
+                          "informationUri": "https://github.com/pypa/pip-audit",
+                          "rules": []
+                      }
+                  },
+                  "results": []
+              }]
+          }
+          rules, results_list = [], []
+          for pkg in results:
+              name = pkg["name"]; version = pkg["version"]
+              for vuln in pkg.get("vulns", []):
+                  rule_id = vuln["id"]
+                  description = vuln.get("description", "")
+                  rules.append({
+                      "id": rule_id,
+                      "shortDescription": {"text": f"{name} {version} vulnerable"},
+                      "fullDescription": {"text": description},
+                      "helpUri": vuln.get("id", "")
+                  })
+                  results_list.append({
+                      "ruleId": rule_id,
+                      "message": {"text": f"{name} {version} has vulnerability {rule_id}"},
+                      "locations": [{
+                          "physicalLocation": {
+                              "artifactLocation": {"uri": "requirements.txt"}
+                          }
+                      }]
+                  })
+          sarif["runs"][0]["tool"]["driver"]["rules"] = rules
+          sarif["runs"][0]["results"] = results_list
+          with open("pip-audit.sarif", "w") as f:
+              json.dump(sarif, f, indent=2)
+          PY
+
+      - name: Upload pip-audit SARIF to Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: pip-audit.sarif
+
+      - name: Upload pip-audit artifact
         uses: actions/upload-artifact@v4
         with:
           name: pip-audit-report
           path: pip-audit.json
+
 
   semgrep:
     name: Semgrep
@@ -63,12 +134,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Semgrep
+        run: pip install semgrep
+
       - name: Run Semgrep
-        uses: returntocorp/semgrep-action@v1
-        with:
-          config: p/ci
-        env:
-          SEMGREP_ARGS: --severity=ERROR --json --output semgrep.json || true
+        run: semgrep --config=p/ci --severity=ERROR --json --output=semgrep.json || true
 
       - name: Upload Semgrep Report
         uses: actions/upload-artifact@v4
