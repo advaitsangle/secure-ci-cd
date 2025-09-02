@@ -57,19 +57,6 @@ jobs:
   #         name: pip-audit-report
   #         path: pip-audit.json
 
-  pip_audit:
-    name: pip-audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - run: pip install --upgrade pip-audit
-
-      - name: Run pip-audit
-        run: pip-audit -r requirements.txt -f json -o pip-audit.json || true
-
       - name: Convert pip-audit JSON to SARIF
         run: |
           python - <<'PY'
@@ -99,14 +86,16 @@ jobs:
               name = pkg.get("name")
               version = pkg.get("version")
               for vuln in pkg.get("vulns", []):
-                  # Make sure vuln is a dict
-                  if not isinstance(vuln, dict):
+                  if not isinstance(vuln, dict):   # ✅ skip bad entries
                       continue
 
                   rule_id = vuln.get("id", "UNKNOWN")
                   description = vuln.get("description", "")
-                  aliases = ", ".join(vuln.get("aliases", [])) if isinstance(vuln.get("aliases", []), list) else str(vuln.get("aliases", ""))
-                  fix_versions = ", ".join(vuln.get("fix_versions", [])) if isinstance(vuln.get("fix_versions", []), list) else str(vuln.get("fix_versions", ""))
+                  aliases_val = vuln.get("aliases", [])
+                  fix_val = vuln.get("fix_versions", [])
+
+                  aliases = ", ".join(aliases_val) if isinstance(aliases_val, list) else str(aliases_val)
+                  fixes = ", ".join(fix_val) if isinstance(fix_val, list) else str(fix_val)
 
                   rules.append({
                       "id": rule_id,
@@ -115,7 +104,7 @@ jobs:
                       "helpUri": rule_id,
                       "properties": {
                           "aliases": aliases,
-                          "fix_versions": fix_versions
+                          "fix_versions": fixes
                       }
                   })
 
