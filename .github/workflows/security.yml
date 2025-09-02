@@ -73,9 +73,11 @@ jobs:
       - name: Convert pip-audit JSON to SARIF
         run: |
           python - <<'PY'
-          import json, sys
+          import json
+
           with open("pip-audit.json") as f:
               results = json.load(f)
+
           sarif = {
               "version": "2.1.0",
               "runs": [{
@@ -89,29 +91,45 @@ jobs:
                   "results": []
               }]
           }
-          rules, results_list = [], []
+
+          rules = []
+          results_list = []
+
           for pkg in results:
-              name = pkg["name"]; version = pkg["version"]
+              name = pkg.get("name")
+              version = pkg.get("version")
               for vuln in pkg.get("vulns", []):
-                  rule_id = vuln["id"]
+                  rule_id = vuln.get("id", "UNKNOWN")
                   description = vuln.get("description", "")
+                  aliases = ", ".join(vuln.get("aliases", []))
+                  fix_versions = ", ".join(vuln.get("fix_versions", []))
+
+                  # Add to rules
                   rules.append({
                       "id": rule_id,
                       "shortDescription": {"text": f"{name} {version} vulnerable"},
                       "fullDescription": {"text": description},
-                      "helpUri": vuln.get("id", "")
+                      "helpUri": rule_id,
+                      "properties": {
+                          "aliases": aliases,
+                          "fix_versions": fix_versions
+                      }
                   })
+
+                  # Add to results
                   results_list.append({
                       "ruleId": rule_id,
-                      "message": {"text": f"{name} {version} has vulnerability {rule_id}"},
+                      "message": {"text": f"{name} {version} vulnerable ({rule_id})"},
                       "locations": [{
                           "physicalLocation": {
                               "artifactLocation": {"uri": "requirements.txt"}
                           }
                       }]
                   })
+
           sarif["runs"][0]["tool"]["driver"]["rules"] = rules
           sarif["runs"][0]["results"] = results_list
+
           with open("pip-audit.sarif", "w") as f:
               json.dump(sarif, f, indent=2)
           PY
