@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [ main ]
   push:
-    branches: [ main ]
+    branches: [ "**" ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -13,6 +13,7 @@ concurrency:
 permissions:
   contents: read
   actions: read
+  security-events: write
 
 jobs:
   gitleaks:
@@ -32,30 +33,23 @@ jobs:
       - name: Run Gitleaks
         run: gitleaks detect --source . --report-format sarif --report-path gitleaks.sarif || true
 
-      - name: Upload Gitleaks Report
+      - name: Upload Gitleaks artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gitleaks-report
           path: gitleaks.sarif
 
-  # pip_audit:
-  #   name: pip-audit
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: actions/setup-python@v5
-  #       with:
-  #         python-version: '3.11'
-  #     - run: pip install --upgrade pip-audit
+      - name: Upload Gitleaks SARIF to Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gitleaks.sarif
+          category: gitleaks
 
-  #     - name: Run pip-audit
-  #       run: pip-audit -r requirements.txt -f json -o pip-audit.json || true
-
-  #     - name: Upload pip-audit Report
-  #       uses: actions/upload-artifact@v4
-  #       with:
-  #         name: pip-audit-report
-  #         path: pip-audit.json
+      - name: Gate on findings
+        if: always()
+        run: python3 .github/scripts/sarif_gate.py gitleaks.sarif
 
   pip_audit:
     name: pip-audit
@@ -114,7 +108,7 @@ jobs:
                       "id": rule_id,
                       "shortDescription": {"text": f"{name} {version} vulnerable"},
                       "fullDescription": {"text": description},
-                      "helpUri": rule_id,
+                      "helpUri": f"https://osv.dev/vulnerability/{rule_id}",
                       "properties": {
                           "aliases": aliases,
                           "fix_versions": fixes
@@ -139,16 +133,22 @@ jobs:
           PY
 
       - name: Upload pip-audit SARIF to Code Scanning
+        if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: pip-audit.sarif
+          category: pip-audit
 
       - name: Upload pip-audit artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pip-audit-report
           path: pip-audit.json
 
+      - name: Gate on findings
+        if: always()
+        run: python3 .github/scripts/sarif_gate.py pip-audit.sarif
 
   semgrep:
     name: Semgrep
@@ -160,26 +160,69 @@ jobs:
         run: pip install semgrep
 
       - name: Run Semgrep
-        run: semgrep --config=p/ci --severity=ERROR --json --output=semgrep.json || true
+        run: semgrep --config=p/ci --severity=ERROR --sarif --output=semgrep.sarif || true
 
-      - name: Upload Semgrep Report
+      - name: Upload Semgrep artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: semgrep-report
-          path: semgrep.json
+          path: semgrep.sarif
+
+      - name: Upload Semgrep SARIF to Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      - name: Gate on findings
+        if: always()
+        run: python3 .github/scripts/sarif_gate.py semgrep.sarif
+
+  bandit:
+    name: Bandit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Bandit
+        run: pip install "bandit[sarif]"
+
+      - name: Run Bandit
+        run: bandit -r src/ --severity-level high -f sarif -o bandit.sarif || true
+
+      - name: Upload Bandit SARIF to Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: bandit.sarif
+          category: bandit
+
+      - name: Upload Bandit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report
+          path: bandit.sarif
+
+      - name: Gate on findings
+        if: always()
+        run: python3 .github/scripts/sarif_gate.py bandit.sarif
 
   trivy:
     name: Trivy Container Scan
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Trivy FS scan (SARIF)
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           scan-type: 'fs'
           scan-ref: '.'
@@ -193,7 +236,7 @@ jobs:
         run: docker build -t app:ci .
 
       - name: Trivy Image scan (SARIF)
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           scan-type: 'image'
           image-ref: 'app:ci'
@@ -204,25 +247,35 @@ jobs:
           exit-code: '0'
 
       - name: Upload Trivy FS artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: trivy-fs-sarif
           path: trivy-fs.sarif
 
       - name: Upload Trivy Image artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: trivy-image-sarif
           path: trivy-image.sarif
 
       - name: Upload Trivy FS SARIF to Code Scanning
+        if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-fs.sarif
-          category: trivy-fs   # <-- unique
+          category: trivy-fs
 
       - name: Upload Trivy Image SARIF to Code Scanning
+        if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-image.sarif
-          category: trivy-image  # <-- unique
+          category: trivy-image
+
+      - name: Gate on findings
+        if: always()
+        run: |
+          python3 .github/scripts/sarif_gate.py trivy-fs.sarif
+          python3 .github/scripts/sarif_gate.py trivy-image.sarif

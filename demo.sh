@@ -8,7 +8,14 @@ git pull origin main
 # ---------------------------
 # Step 1: Delete old branches
 # ---------------------------
+# These are the branches this script (re)creates — delete any leftovers so
+# `git checkout -b` below starts from a clean state on every run. The legacy
+# test/* names are kept so older demo runs get cleaned up too.
 OLD_BRANCHES=(
+  demo/gitleaks
+  demo/pip-audit
+  demo/semgrep
+  demo/bandit
   test/pip-audit
   test/pip-audit-2
   test/semgrep
@@ -53,6 +60,21 @@ git add src/app.py
 git commit -m "demo(semgrep): run flask on 0.0.0.0 (insecure)"
 git push -u origin demo/semgrep
 
+# D) Bandit branch
+git checkout main
+git checkout -b demo/bandit
+cat > src/insecure.py <<'EOF'
+import subprocess
+
+
+def run(user_cmd):
+    # Insecure: shell=True with untrusted input -> Bandit B602 (HIGH severity)
+    return subprocess.call(user_cmd, shell=True)
+EOF
+git add src/insecure.py
+git commit -m "demo(bandit): subprocess with shell=True (insecure)"
+git push -u origin demo/bandit
+
 # Back to main
 git checkout main
 
@@ -61,4 +83,5 @@ echo "Open PRs at:"
 echo "  https://github.com/<YOUR-USER>/secure-ci-cd/compare/main...demo/gitleaks"
 echo "  https://github.com/<YOUR-USER>/secure-ci-cd/compare/main...demo/pip-audit"
 echo "  https://github.com/<YOUR-USER>/secure-ci-cd/compare/main...demo/semgrep"
+echo "  https://github.com/<YOUR-USER>/secure-ci-cd/compare/main...demo/bandit"
 
