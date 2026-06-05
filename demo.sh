@@ -16,6 +16,8 @@ OLD_BRANCHES=(
   demo/pip-audit
   demo/semgrep
   demo/bandit
+  demo/trivy
+  demo/artifact-test
   test/pip-audit
   test/pip-audit-2
   test/semgrep
@@ -75,13 +77,26 @@ git add src/insecure.py
 git commit -m "demo(bandit): subprocess with shell=True (insecure)"
 git push -u origin demo/bandit
 
+# E) Trivy branch (outdated base image with known OS-level CVEs)
+git checkout main
+git checkout -b demo/trivy
+sed -i.bak 's|^FROM python:3.11-slim$|FROM python:3.11.0-slim|' Dockerfile
+rm -f Dockerfile.bak
+git add Dockerfile
+git commit -m "demo(trivy): pin outdated base image with OS CVEs"
+git push -u origin demo/trivy
+
 # Back to main
 git checkout main
 
+# Build clickable compare URLs from the actual origin remote
+REMOTE_URL=$(git remote get-url origin | sed -E 's#git@github.com:#https://github.com/#; s#\.git$##')
+
 echo "✅ Demo branches created and pushed!"
-echo "Open PRs at:"
-echo "  https://github.com/<YOUR-USER>/secure-ci-cd/compare/main...demo/gitleaks"
-echo "  https://github.com/<YOUR-USER>/secure-ci-cd/compare/main...demo/pip-audit"
-echo "  https://github.com/<YOUR-USER>/secure-ci-cd/compare/main...demo/semgrep"
-echo "  https://github.com/<YOUR-USER>/secure-ci-cd/compare/main...demo/bandit"
+echo "Each branch trips exactly one scanner. Open PRs at:"
+echo "  Gitleaks  : $REMOTE_URL/compare/main...demo/gitleaks"
+echo "  pip-audit : $REMOTE_URL/compare/main...demo/pip-audit"
+echo "  Semgrep   : $REMOTE_URL/compare/main...demo/semgrep"
+echo "  Bandit    : $REMOTE_URL/compare/main...demo/bandit"
+echo "  Trivy     : $REMOTE_URL/compare/main...demo/trivy"
 

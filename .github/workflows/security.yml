@@ -21,8 +21,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Install Gitleaks
         run: |
@@ -30,8 +28,11 @@ jobs:
           tar -xzf gitleaks.tar.gz gitleaks
           sudo mv gitleaks /usr/local/bin/
 
+      # --no-git scans the checked-out working tree (what is actually being
+      # merged) rather than walking history across every fetched branch, so a
+      # secret on an unrelated branch can't fail the scan on this ref.
       - name: Run Gitleaks
-        run: gitleaks detect --source . --report-format sarif --report-path gitleaks.sarif || true
+        run: gitleaks detect --source . --no-git --report-format sarif --report-path gitleaks.sarif || true
 
       - name: Upload Gitleaks artifact
         if: always()
@@ -231,27 +232,18 @@ jobs:
             | sudo sh -s -- -b /usr/local/bin
           trivy --version
 
-      - name: Trivy FS scan (SARIF)
-        run: |
-          trivy fs . \
-            --format sarif --output trivy-fs.sarif \
-            --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0
-
       - name: Build image
         run: docker build -t app:ci .
 
-      - name: Trivy Image scan (SARIF)
+      # Scope Trivy to OS / base-image packages only (--pkg-types os).
+      # Python dependencies are owned by pip-audit, so this avoids the two
+      # tools double-flagging the same package and keeps each gate distinct.
+      - name: Trivy Image scan (OS packages, SARIF)
         run: |
           trivy image app:ci \
+            --pkg-types os \
             --format sarif --output trivy-image.sarif \
             --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0
-
-      - name: Upload Trivy FS artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: trivy-fs-sarif
-          path: trivy-fs.sarif
 
       - name: Upload Trivy Image artifact
         if: always()
@@ -259,13 +251,6 @@ jobs:
         with:
           name: trivy-image-sarif
           path: trivy-image.sarif
-
-      - name: Upload Trivy FS SARIF to Code Scanning
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-fs.sarif
-          category: trivy-fs
 
       - name: Upload Trivy Image SARIF to Code Scanning
         if: always()
@@ -276,6 +261,4 @@ jobs:
 
       - name: Gate on findings
         if: always()
-        run: |
-          python3 .github/scripts/sarif_gate.py trivy-fs.sarif
-          python3 .github/scripts/sarif_gate.py trivy-image.sarif
+        run: python3 .github/scripts/sarif_gate.py trivy-image.sarif
