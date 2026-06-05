@@ -70,7 +70,11 @@ jobs:
           import json
 
           with open("pip-audit.json") as f:
-              results = json.load(f)
+              data = json.load(f)
+
+          # pip-audit -f json emits {"dependencies": [...], "fixes": [...]};
+          # older versions emitted a bare list. Handle both.
+          results = data["dependencies"] if isinstance(data, dict) else data
 
           sarif = {
               "version": "2.1.0",
@@ -221,30 +225,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sudo sh -s -- -b /usr/local/bin
+          trivy --version
+
       - name: Trivy FS scan (SARIF)
-        uses: aquasecurity/trivy-action@v0.28.0
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'sarif'
-          output: 'trivy-fs.sarif'
-          severity: 'HIGH,CRITICAL'
-          ignore-unfixed: true
-          exit-code: '0'
+        run: |
+          trivy fs . \
+            --format sarif --output trivy-fs.sarif \
+            --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0
 
       - name: Build image
         run: docker build -t app:ci .
 
       - name: Trivy Image scan (SARIF)
-        uses: aquasecurity/trivy-action@v0.28.0
-        with:
-          scan-type: 'image'
-          image-ref: 'app:ci'
-          format: 'sarif'
-          output: 'trivy-image.sarif'
-          severity: 'HIGH,CRITICAL'
-          ignore-unfixed: true
-          exit-code: '0'
+        run: |
+          trivy image app:ci \
+            --format sarif --output trivy-image.sarif \
+            --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0
 
       - name: Upload Trivy FS artifact
         if: always()

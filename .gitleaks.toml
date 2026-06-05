@@ -1,0 +1,15 @@
+# Start from Gitleaks' built-in ruleset, then narrow with an allowlist.
+[extend]
+useDefault = true
+
+[allowlist]
+description = """
+The demo scripts contain intentional, fake credentials used to trigger the
+pipeline during demonstrations. They are allowlisted so scans of main stay
+clean — but the secrets added on the demo/gitleaks branch (secrets.txt) are
+NOT allowlisted and will still be flagged.
+"""
+paths = [
+  '''demo\.sh''',
+  '''reset-gitleaks-demo\.sh''',
+]
